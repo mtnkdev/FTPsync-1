@@ -19,18 +19,25 @@ use Net::FTP;
 use File::Find;
 use Pod::Usage;
 use Getopt::Std;
+use Getopt::Long;
 
 use vars qw($opt_s $opt_k $opt_u $opt_l $opt_p $opt_r $opt_h $opt_d $opt_P $opt_i $opt_o);
 
 getopts('i:o:l:s:u:p:r:hkvdP');
 
-if($opt_h)
+sub usage
 {
-	pod2usage({
-		-exitval => 2, 
-		-verbose => 2
-	});
+  print "-----------------------------------------------------------------------\n";
+  print " FTP Synchroniz\n\n";
+  print " Uzycie: program [-s SERWER] [-u UZYTKOWNIK] [-p HASLO] [--help|-h]\n\n";
+  print " Program do automatycznej synchronizacji plikow na lokalnym serwerze ze zdalnym serwerem FTP.\n";
+  print "-----------------------------------------------------------------------\n";
+  exit;
 }
+
+sub HELP_MESSAGE { usage(); }
+
+if($opt_h || !($opt_s || $opt_u)) { usage(); }
 
 $opt_s ||= 'localhost';
 $opt_u ||= 'anonymous';
@@ -71,18 +78,17 @@ find({
   },
 }, '.' );
 
-my $ftp = new Net::FTP($opt_s, 
-	Debug => $opt_d, 
-	Passive => $opt_P,
-);
+my $conn = new Net::FTP($opt_s, Passive => 1) or die "Nie udalo sie polaczyc z serwerem $opt_s.\n";
+print "Polaczono z serwerem $opt_s...\n";
 
-die "Failed to connect to server '$opt_s': $!\n" unless $ftp;
-die "Failed to login as $opt_u\n" unless $ftp->login($opt_u, $opt_p);
-die "Cannot change directory to $opt_r\n" unless $ftp->cwd($opt_r);
+$conn->login($opt_u, $opt_p) or expire($conn, "Nie udalo sie zalogowac jako $opt_u.\n");
+print "Zalogowano jako $opt_u...\n";
 
-warn "Failed to set binary mode\n" unless $ftp->binary();
+$conn->cwd("/") or expire($conn, "Blad poczatkowego katalogu.\n");
+print "Poczatkowy katalog: OK...\n";
 
-#print "connected\n" if $opt_v;
+$conn->binary() or expire($conn, "Brak trybu binarnego.\n");
+print "Tryb binarny: OK...\n";
 
 sub scan_ftp
 {
@@ -90,7 +96,7 @@ sub scan_ftp
 	my $path = shift;
 	my $rrem = shift;
 
-	my $rdir = $ftp->dir($path);
+	my $rdir = $conn->dir($path);
 
 	return unless $rdir and @$rdir;
 
@@ -113,8 +119,8 @@ sub scan_ftp
 
     next if exists $rrem->{$name};
 
-    my $mdtm = ($ftp->mdtm($name) || 0) + $opt_o;
-    my $size = $ftp->size($name) || 0;
+    my $mdtm = ($conn->mdtm($name) || 0) + $opt_o;
+    my $size = $conn->size($name) || 0;
     my $type = substr($f, 0, 1);
 
     $type =~ s/-/f/;
@@ -127,11 +133,11 @@ sub scan_ftp
       type => $type,
     };
 
-    scan_ftp($ftp, $name, $rrem) if $type eq 'd';
+    scan_ftp($conn, $name, $rrem) if $type eq 'd';
   }
 }
 
-scan_ftp($ftp, '', \%rem);
+scan_ftp($conn, '', \%rem);
 
 # synchronizacja
 
@@ -150,7 +156,7 @@ for my $l (sort { length($a) <=> length($b) } keys %loc)
 		}	
 		else 
 		{
-			if(!$ftp->mkdir($l))
+			if(!$conn->mkdir($l))
 			{
 				print "Failed to MKDIR $l\n";
 				exit 1;
@@ -170,7 +176,7 @@ for my $l (sort { length($a) <=> length($b) } keys %loc)
 		}
 		else
 		{
-			if(!$ftp->put($l, $l))
+			if(!$conn->put($l, $l))
 			{
 				print "Failed to GET $l\n";
 				exit 1;
@@ -197,7 +203,7 @@ for my $r (sort { length($b) <=> length($a) } keys %rem)
   }
   else
   { 
-  	if(!$ftp->delete($r))
+  	if(!$conn->delete($r))
   	{
   		print "Failed to DELETE $r\n";
   		exit 1;
