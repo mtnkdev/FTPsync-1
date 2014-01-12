@@ -133,6 +133,77 @@ sub scan_ftp
 
 scan_ftp($ftp, '', \%rem);
 
+# synchronizacja
+
+for my $l (sort { length($a) <=> length($b) } keys %loc)
+{
+	warn "Symbolic link $l not supported\n" if $loc{$l}->{type} eq 'l';
+
+	if($loc{$l}->{type} eq 'd')
+	{
+		next if exists $rem{$l};
+		#print "$l dir missing in the FTP repository\n" if $opt_v;
+
+		if($opt_k)
+		{
+			print "MKDIR $l\n";
+		}	
+		else 
+		{
+			if(!$ftp->mkdir($l))
+			{
+				print "Failed to MKDIR $l\n";
+				exit 1;
+			}
+		}	
+	}
+	else
+	{
+		next if exists $rem{$l} and $rem{$l}->{mdtm} <= $loc{$l}->{mdtm};
+		next if exists $rem{$l} and $rem{$l}->{mdtm} >= $loc{$l}->{mdtm};
+
+		#print "$l file missing or older in the local repository\n" if $opt_v;
+
+		if($opt_k)
+		{
+			print "PUT $l $l\n"
+		}
+		else
+		{
+			if(!$ftp->put($l, $l))
+			{
+				print "Failed to GET $l\n";
+				exit 1;
+			}
+		}
+	}
+}
+
+for my $r (sort { length($b) <=> length($a) } keys %rem)
+{
+	if ($rem{$r}->{type} eq 'l')
+  {
+  	warn "Symbolic link $r not supported\n";
+    next;
+  }
+
+  next if exists $loc{$r};
+
+  #print "$r file missing locally\n" if $opt_v;
+
+  if($opt_k)
+  {
+  	print "DELETE $r\n" 
+  }
+  else
+  { 
+  	if(!$ftp->delete($r))
+  	{
+  		print "Failed to DELETE $r\n";
+  		exit 1;
+  	}
+  }
+}
 
 
 
