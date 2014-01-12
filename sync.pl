@@ -56,8 +56,8 @@ find({
 
     if($opt_i and $File::Find::name =~ m/$opt_i/)
     {
-      print "local: IGNORING $File::Find::name\n"
-        return;
+      print "local: IGNORING $File::Find::name\n";
+      return;
     }
 
     my $r = $loc{$File::Find::name} = {
@@ -66,16 +66,23 @@ find({
       type => -f _ ? 'f' : -d _ ? 'd' : -l $File::Find::name ? 'l' : '?',
     };
 
-    print "local: adding $File::Find::name (", "$r->{mdtm}, $r->{size}, $r->{type})\n" if $opt
+    print "local: adding $File::Find::name (", "$r->{mdtm}, $r->{size}, $r->{type})\n" if $opt_d;
 
   },
 }, '.' );
 
-my $ftp = new Net::FTP($opt_s, Debug => $opt_d, Passive => $opt_P,);
+my $ftp = new Net::FTP($opt_s, 
+	Debug => $opt_d, 
+	Passive => $opt_P,
+);
 
-die "Failed to connect to server '$opt_s': $!\n" unless $ftp
-die "Failed to login as $opt_u\n" unless $ftp->login($opt_u, die "Cannot change directory to $opt_r\n" unless $ftp->cwd($warn "Failed to set binary mode\n" unless $ftp->binary();
-print "connected\n" if $opt_v;
+die "Failed to connect to server '$opt_s': $!\n" unless $ftp;
+die "Failed to login as $opt_u\n" unless $ftp->login($opt_u, $opt_p);
+die "Cannot change directory to $opt_r\n" unless $ftp->cwd($opt_r);
+
+warn "Failed to set binary mode\n" unless $ftp->binary();
+
+#print "connected\n" if $opt_v;
 
 sub scan_ftp
 {
@@ -112,7 +119,7 @@ sub scan_ftp
 
     $type =~ s/-/f/;
 
-    warn "ftp: adding $name ($mdtm, $size, $type)\n" if 
+    warn "ftp: adding $name ($mdtm, $size, $type)\n" if $opt_d;
 
     $rrem->{$name} = {
     	mdtm => $mdtm,
