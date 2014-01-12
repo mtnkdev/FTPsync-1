@@ -14,7 +14,6 @@
 #################################################################
 
 use strict;
-use warnings;
 use Net::FTP;
 use File::Find;
 use Pod::Usage;
@@ -47,8 +46,8 @@ $opt_l ||= '.';
 $opt_o ||= 0;
 $opt_i = qr/$opt_i/ if $opt_i;
 
-my %rem = ();
-my %loc = ();
+my %remote = ();
+my %local = ();
 
 chdir $opt_l or die "Cannot change dir to $opt_l:   $!\n";
 
@@ -67,10 +66,10 @@ find({
       return;
     }
 
-    my $r = $loc{$File::Find::name} = {
+    my $r = $local{$File::Find::name} = {
       mdtm => (stat($File::Find::name))[9],
       size => (stat(_))[7],
-      type => -f _ ? 'f' : -d _ ? 'd' : -l $File::Find::name ? 'l' : '?',
+      type => -f _ ? 'file' : -d _ ? 'directory' : -l $File::Find::name ? 'l' : '?',
     };
 
     print "local: adding $File::Find::name (", "$r->{mdtm}, $r->{size}, $r->{type})\n" if $opt_d;
@@ -137,78 +136,71 @@ sub scan_ftp
   }
 }
 
-scan_ftp($conn, '', \%rem);
+scan_ftp($conn, '', \%remote);
 
 # synchronizacja
 
-for my $l (sort { length($a) <=> length($b) } keys %loc)
+print "Synchronizacja...\n";
+
+my $uptodate = 1;
+my $err = 0;
+
+foreach my $file (sort { length($a) <=> length($b) } keys %local)
 {
-	warn "Symbolic link $l not supported\n" if $loc{$l}->{type} eq 'l';
-
-	if($loc{$l}->{type} eq 'd')
+	# brak katalogu na zewnetrzym serwerze
+	if($local{$file}->{type} eq 'directory' and !exists $remote{$file})
 	{
-		next if exists $rem{$l};
-		#print "$l dir missing in the FTP repository\n" if $opt_v;
+		if(!$conn->mkdir($file))
+		{
+			print $conn, "Nie mozna utworzyc $file...";
+			$err += 1;
+			next;
+		}	
 
-		if($opt_k)
-		{
-			print "MKDIR $l\n";
-		}	
-		else 
-		{
-			if(!$conn->mkdir($l))
-			{
-				print "Failed to MKDIR $l\n";
-				exit 1;
-			}
-		}	
+		$uptodate = 0;
 	}
-	else
+
+	# plik
+	elsif($local{$file}->{type} eq 'file' and !exists $remote{$file} and $remote{$file} < $local{$file})
 	{
-		next if exists $rem{$l} and $rem{$l}->{mdtm} <= $loc{$l}->{mdtm};
-		next if exists $rem{$l} and $rem{$l}->{mdtm} >= $loc{$l}->{mdtm};
+		print "+Przenosze $file...\n";
 
-		#print "$l file missing or older in the local repository\n" if $opt_v;
+		if(!$conn->put($file, $file))
+		{
+			print "Nie mozna przesniec $file.\n";
+			$err += 1;
+			next;
+		}
 
-		if($opt_k)
-		{
-			print "PUT $l $l\n"
-		}
-		else
-		{
-			if(!$conn->put($l, $l))
-			{
-				print "Failed to GET $l\n";
-				exit 1;
-			}
-		}
+		$uptodate = 0;
 	}
 }
 
-for my $r (sort { length($b) <=> length($a) } keys %rem)
+foreach my $file (sort { length($b) <=> length($a) } keys %remote)
 {
-	if ($rem{$r}->{type} eq 'l')
+  next if exists $local{$file};
+
+  print "-Usuwam $file.\n";
+
+  if(!$conn->delete($file))
   {
-  	warn "Symbolic link $r not supported\n";
-    next;
+  	print "Nie mozna usunac $file.\n";
+  	$err += 1;
+  	next;
   }
 
-  next if exists $loc{$r};
+  $uptodate = 0;
+}
 
-  #print "$r file missing locally\n" if $opt_v;
-
-  if($opt_k)
-  {
-  	print "DELETE $r\n" 
-  }
-  else
-  { 
-  	if(!$conn->delete($r))
-  	{
-  		print "Failed to DELETE $r\n";
-  		exit 1;
-  	}
-  }
+if($uptodate and !$err)
+{
+	print "Wszystkie pliki sa aktualne.\n"
+}
+else
+{
+	print "Zakonczono synchronizacje";
+	print " z bledami" if $err;
+	print ".\n";
 }
 
 
