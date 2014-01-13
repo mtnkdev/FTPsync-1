@@ -13,69 +13,23 @@
 #																																#
 #################################################################
 
-use strict;
 use Net::FTP;
-use File::Find;
-use Pod::Usage;
 use Getopt::Std;
-use Getopt::Long;
+use strict;
+use 5.010;
 
-use vars qw($opt_s $opt_k $opt_u $opt_l $opt_p $opt_r $opt_h $opt_d $opt_P $opt_i $opt_o);
+use vars qw($opt_s $opt_u $opt_p $opt_d $opt_h);
 
-getopts('i:o:l:s:u:p:r:hkvdP');
-
-sub usage
-{
-  print "-----------------------------------------------------------------------\n";
-  print " FTP Synchroniz\n\n";
-  print " Uzycie: program [-s SERWER] [-u UZYTKOWNIK] [-p HASLO] [--help|-h]\n\n";
-  print " Program do automatycznej synchronizacji plikow na lokalnym serwerze ze zdalnym serwerem FTP.\n";
-  print "-----------------------------------------------------------------------\n";
-  exit;
-}
-
-sub HELP_MESSAGE { usage(); }
+getopts('l:s:u:p:h');
 
 if($opt_h || !($opt_s || $opt_u)) { usage(); }
 
-$opt_s ||= 'localhost';
-$opt_u ||= 'anonymous';
-$opt_p ||= 'someuser@';
-$opt_r ||= '/';
-$opt_l ||= '.';
-$opt_o ||= 0;
-$opt_i = qr/$opt_i/ if $opt_i;
+$opt_d ||= '.';
 
 my %remote = ();
 my %local = ();
 
-chdir $opt_l or die "Cannot change dir to $opt_l:   $!\n";
-
-find({
-	no_chdir       => 1,
-  follow         => 0,
-  wanted         => sub {
-
-    return if $File::Find::name eq '.';
-
-    $File::Find::name =~ s!^\./!!;
-
-    if($opt_i and $File::Find::name =~ m/$opt_i/)
-    {
-      print "local: IGNORING $File::Find::name\n";
-      return;
-    }
-
-    my $r = $local{$File::Find::name} = {
-      mdtm => (stat($File::Find::name))[9],
-      size => (stat(_))[7],
-      type => -f _ ? 'file' : -d _ ? 'directory' : -l $File::Find::name ? 'l' : '?',
-    };
-
-    print "local: adding $File::Find::name (", "$r->{mdtm}, $r->{size}, $r->{type})\n" if $opt_d;
-
-  },
-}, '.' );
+chdir $opt_d or die "Cannot change dir to $opt_d:   $!\n";
 
 my $conn = new Net::FTP($opt_s, Passive => 1) or die "Nie udalo sie polaczyc z serwerem $opt_s.\n";
 print "Polaczono z serwerem $opt_s...\n";
@@ -89,56 +43,12 @@ print "Poczatkowy katalog: OK...\n";
 $conn->binary() or expire($conn, "Brak trybu binarnego.\n");
 print "Tryb binarny: OK...\n";
 
-sub scan_ftp
-{
-	my $fpt = shift;
-	my $path = shift;
-	my $rrem = shift;
 
-	my $rdir = $conn->dir($path);
 
-	return unless $rdir and @$rdir;
+traverse_local($opt_d, \%local);
+traverse_remote("", \%remote);
 
-	for my $f (@$rdir)
-  {
-  	next if $f =~ m/^d.+\s\.\.?$/;
-  	my $n = (split(/\s+/, $f, 9))[8];
-
-    next unless defined $n;
-
-    my $name = '';
-    $name = $path . '/' if $path;
-    $name .= $n;
-
-    if($opt_i and $name =~ m/$opt_i/)
-    {
-    	print "ftp: IGNORING $name\n" if $opt_d;
-      next;
-    }
-
-    next if exists $rrem->{$name};
-
-    my $mdtm = ($conn->mdtm($name) || 0) + $opt_o;
-    my $size = $conn->size($name) || 0;
-    my $type = substr($f, 0, 1);
-
-    $type =~ s/-/f/;
-
-    warn "ftp: adding $name ($mdtm, $size, $type)\n" if $opt_d;
-
-    $rrem->{$name} = {
-    	mdtm => $mdtm,
-      size => $size,
-      type => $type,
-    };
-
-    scan_ftp($conn, $name, $rrem) if $type eq 'd';
-  }
-}
-
-scan_ftp($conn, '', \%remote);
-
-# synchronizacja
+#synchronizacja
 
 print "Synchronizacja...\n";
 
@@ -148,10 +58,11 @@ my $err = 0;
 foreach my $file (sort { length($a) <=> length($b) } keys %local)
 {
 	# brak katalogu na zewnetrzym serwerze
-	if($local{$file}->{type} eq 'directory' and !exists $remote{$file})
+	if($local{$file}->{type} eq "d" and !exists $remote{$file})
 	{
 		if(!$conn->mkdir($file))
 		{
+			print "+Tworze $file...\n";
 			print $conn, "Nie mozna utworzyc $file...";
 			$err += 1;
 			next;
@@ -161,7 +72,7 @@ foreach my $file (sort { length($a) <=> length($b) } keys %local)
 	}
 
 	# plik
-	elsif($local{$file}->{type} eq 'file' and !exists $remote{$file} and $remote{$file} < $local{$file})
+	elsif($local{$file}->{type} eq "f" and !exists $remote{$file} and $remote{$file} < $local{$file})
 	{
 		print "+Przenosze $file...\n";
 
@@ -202,6 +113,100 @@ else
 	print " z bledami" if $err;
 	print ".\n";
 }
+
+sub traverse_local {
+  my $path = shift;
+	my $list = shift;
+ 
+  return if not -d $path;
+  opendir my $dh, $path or die;
+
+  while (my $file = readdir $dh) {
+    next if $file =~ m/^\.|\.\.?$/;
+
+    my $n = (split('/', $file))[-1];
+
+    my $name = '';
+    $name = $path . '/' unless $path =~ m/^\.\.?$/;
+    $name .= $file;
+
+    my $check = $path . '/' . $file;
+
+    my $mdtm = (stat($file))[9];
+    my $size = (stat(_))[7];
+    my $type = -f $check ? "f" : -d $check ? "d" : -l $file ? 'l' : '?';
+
+    $type =~ s/-/f/;
+
+    $list->{$name} = {
+    	mdtm => $mdtm,
+      size => $size,
+      type => $type,
+    };
+
+    traverse_local($name, $list);
+  }
+
+  close $dh;
+  return;
+}
+
+sub traverse_remote
+{
+	my $path = shift;
+	my $list = shift;
+
+	my $rdir = $conn->dir($path);
+
+	return unless $rdir and @$rdir;
+
+	for my $f (@$rdir)
+  {
+  	next if $f =~ m/d.+\s\.\.?$/;
+  	my $n = (split(/\s+/, $f, 9))[8];
+  	next if $n =~ m/^\./;
+
+    next unless defined $n;
+
+    my $name = '';
+    $name = $path . '/' if $path;
+    $name .= $n;
+
+    next if exists $list->{$name};
+
+    my $mdtm = ($conn->mdtm($name) || 0) + 0;
+    my $size = $conn->size($name) || 0;
+    my $type = substr($f, 0, 1);
+
+    $type =~ s/-/f/;
+
+    $list->{$name} = {
+    	mdtm => $mdtm,
+      size => $size,
+      type => $type,
+    };
+
+    traverse_remote($name, $list) if $type eq "d";
+  }
+}
+
+sub usage
+{
+  print "-----------------------------------------------------------------------------------------------\n";
+  print " FTP Synchroniz\n\n";
+  print " Uzycie: program [-s SERWER] [-u UZYTKOWNIK] [-p HASLO] [-d KATALOG] [--help|-h]\n\n";
+  print " Program do automatycznej synchronizacji plikow na lokalnym serwerze ze zdalnym serwerem FTP.\n";
+  print " Program porownuje pliki i foldery zawarte w katalogu podanym przez uzytkownika z zawartoscia\n";
+  print " na serwerze FTP. Program rozroznia poszczegole przypadki zawartosci:\n";
+  print " 1. Jesli plik znajduje sie na serwerze lokalnym, a na serwerze FTP nie, to zostanie wyslany.\n";
+  print " 2. Jesli plik znajduje sie na serwerze FTP, a na serwerze lokalnym nie, to zostanie usuniety.\n";
+  print " 3. Jesli plik znajduje sie na serwerze lokalnym oraz a na serwerze FTP, to zostana porownane\n";
+  print " wersje. Jesli wersja pliku lokalnego okaze sie nowsza od zdalnej to plik zostanie nadpisany.\n";
+  print "-----------------------------------------------------------------------------------------------\n";
+  exit;
+}
+
+sub HELP_MESSAGE { usage(); }
 
 
 
