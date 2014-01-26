@@ -20,32 +20,33 @@ use 5.010;
 
 use vars qw($opt_s $opt_u $opt_p $opt_d $opt_h);
 
-getopts('l:s:u:p:h');
+getopts('s:u:p:d:h');
 
 if($opt_h || !($opt_s || $opt_u)) { usage(); }
 
 $opt_d ||= '.';
 
+my $self = $0;
+$self =~ s/.\///g;
+
 my %remote = ();
 my %local = ();
 
-chdir $opt_d or die "Cannot change dir to $opt_d:   $!\n";
+chdir $opt_d or die "Nie mozna otworzyc sciezki $opt_d.\n";
 
 my $conn = new Net::FTP($opt_s, Passive => 1) or die "Nie udalo sie polaczyc z serwerem $opt_s.\n";
 print "Polaczono z serwerem $opt_s...\n";
 
-$conn->login($opt_u, $opt_p) or expire($conn, "Nie udalo sie zalogowac jako $opt_u.\n");
+$conn->login($opt_u, $opt_p) or die "Nie udalo sie zalogowac jako $opt_u.\n";
 print "Zalogowano jako $opt_u...\n";
 
-$conn->cwd("/") or expire($conn, "Blad poczatkowego katalogu.\n");
+$conn->cwd("/") or die $conn, "Blad poczatkowego katalogu.\n";
 print "Poczatkowy katalog: OK...\n";
 
-$conn->binary() or expire($conn, "Brak trybu binarnego.\n");
+$conn->binary() or die $conn, "Brak trybu binarnego.\n";
 print "Tryb binarny: OK...\n";
 
-
-
-traverse_local($opt_d, \%local);
+traverse_local(".", \%local);
 traverse_remote("", \%remote);
 
 #synchronizacja
@@ -72,7 +73,7 @@ foreach my $file (sort { length($a) <=> length($b) } keys %local)
 	}
 
 	# plik
-	elsif($local{$file}->{type} eq "f" and !exists $remote{$file} and $remote{$file} < $local{$file})
+	elsif($local{$file}->{type} eq "f" and (!exists $remote{$file} or $remote{$file}{size} != $local{$file}{size}))
 	{
 		print "+Przenosze $file...\n";
 
@@ -95,9 +96,12 @@ foreach my $file (sort { length($b) <=> length($a) } keys %remote)
 
   if(!$conn->delete($file))
   {
-  	print "Nie mozna usunac $file.\n";
-  	$err += 1;
-  	next;
+    if(!$conn->rmdir($file))
+    {
+  	  print "Nie mozna usunac $file.\n";
+  	  $err += 1;
+  	  next;
+    }
   }
 
   $uptodate = 0;
@@ -123,28 +127,26 @@ sub traverse_local {
 
   while (my $file = readdir $dh) {
     next if $file =~ m/^\.|\.\.?$/;
+    next if $file eq $self;
 
-    my $n = (split('/', $file))[-1];
-
-    my $name = '';
-    $name = $path . '/' unless $path =~ m/^\.\.?$/;
-    $name .= $file;
+    my $ready = '';
+    $ready = $path . '/' unless $path =~ m/^\.\.?$/;
+    $ready .= $file;
 
     my $check = $path . '/' . $file;
-
-    my $mdtm = (stat($file))[9];
-    my $size = (stat(_))[7];
     my $type = -f $check ? "f" : -d $check ? "d" : -l $file ? 'l' : '?';
-
     $type =~ s/-/f/;
 
-    $list->{$name} = {
-    	mdtm => $mdtm,
-      size => $size,
+    my $size = (stat(_))[7];
+    my $mdtm = (stat($file))[9];
+
+    $list->{$ready} = {
       type => $type,
+      size => $size,
+    	mdtm => $mdtm,
     };
 
-    traverse_local($name, $list);
+    traverse_local($ready, $list);
   }
 
   close $dh;
@@ -156,37 +158,36 @@ sub traverse_remote
 	my $path = shift;
 	my $list = shift;
 
-	my $rdir = $conn->dir($path);
+	my $dh = $conn->dir($path);
+	return unless $dh and @$dh;
 
-	return unless $rdir and @$rdir;
-
-	for my $f (@$rdir)
+	for my $file (@$dh)
   {
-  	next if $f =~ m/d.+\s\.\.?$/;
-  	my $n = (split(/\s+/, $f, 9))[8];
-  	next if $n =~ m/^\./;
+  	next if $file =~ m/d.+\s\.\.?$/;
+  	my $nc = (split(/\s+/, $file, 9))[8];
+  	next if $nc =~ m/^\./;
 
-    next unless defined $n;
+    next unless defined $nc;
 
-    my $name = '';
-    $name = $path . '/' if $path;
-    $name .= $n;
+    my $ready = '';
+    $ready = $path . '/' if $path;
+    $ready .= $nc;
 
-    next if exists $list->{$name};
+    next if exists $list->{$ready};
 
-    my $mdtm = ($conn->mdtm($name) || 0) + 0;
-    my $size = $conn->size($name) || 0;
-    my $type = substr($f, 0, 1);
-
+    my $type = substr($file, 0, 1);
     $type =~ s/-/f/;
 
-    $list->{$name} = {
-    	mdtm => $mdtm,
-      size => $size,
+    my $size = $conn->size($ready) || 0;
+    my $mdtm = ($conn->mdtm($ready) || 0) + 0;   
+
+    $list->{$ready} = {
       type => $type,
+      size => $size,
+      mdtm => $mdtm,
     };
 
-    traverse_remote($name, $list) if $type eq "d";
+    traverse_remote($ready, $list) if $type eq "d";
   }
 }
 
@@ -207,14 +208,4 @@ sub usage
 }
 
 sub HELP_MESSAGE { usage(); }
-
-
-
-
-
-
-
-
-
-
 
